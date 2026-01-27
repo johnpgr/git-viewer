@@ -21,10 +21,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
 
       - run: pnpm install
 
       - run: pnpm build
 
-      - run: npm publish --provenance --access public
+      - run: npx npm@latest publish --provenance --access public
