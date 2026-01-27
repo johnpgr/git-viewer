@@ -149,12 +149,6 @@ async function selectCommit(commit: Commit) {
 }
 
 function toggleFullscreenDiff(open: boolean) {
-  if (!document.startViewTransition) {
-    state.fullscreenDiff = open;
-    updateApp();
-    return;
-  }
-
   document.startViewTransition(() => {
     state.fullscreenDiff = open;
     updateApp();
