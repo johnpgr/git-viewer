@@ -1,4 +1,5 @@
 import { createRoot, type Handle } from "remix/component";
+import { TypedEventTarget } from "remix/interaction";
 
 // ============================================================================
 // Types
@@ -56,103 +57,74 @@ type DiffData = {
 };
 
 // ============================================================================
-// Global State
-// ============================================================================
-
-let state = {
-  refs: null as RefsData | null,
-  commits: [] as Commit[],
-  maxLane: 0,
-  selectedCommit: null as Commit | null,
-  diff: null as DiffData | null,
-  filter: "all" as string,
-  search: "",
-  loading: true,
-  fullscreenDiff: false,
-};
-
-let updateApp: () => void;
-
-// ============================================================================
 // API
 // ============================================================================
 
-async function fetchRefs(): Promise<RefsData> {
-  let res = await fetch("/api/refs");
+async function fetchRefs(signal?: AbortSignal): Promise<RefsData> {
+  let res = await fetch("/api/refs", { signal });
   return res.json();
 }
 
 async function fetchCommits(
   ref?: string,
   search?: string,
+  signal?: AbortSignal,
 ): Promise<{ commits: Commit[]; maxLane: number }> {
   let params = new URLSearchParams();
   if (ref) params.set("ref", ref);
   if (search) params.set("search", search);
-  let res = await fetch(`/api/commits?${params}`);
+  let res = await fetch(`/api/commits?${params}`, { signal });
   let data = await res.json();
   return { commits: data.commits, maxLane: data.maxLane };
 }
 
-async function fetchDiff(sha: string): Promise<DiffData> {
-  let res = await fetch(`/api/diff/${sha}`);
+async function fetchDiff(sha: string, signal?: AbortSignal): Promise<DiffData> {
+  let res = await fetch(`/api/diff/${sha}`, { signal });
   return res.json();
 }
 
 // ============================================================================
-// Actions
+// App Store
 // ============================================================================
 
-async function setFilter(filter: string) {
-  state.filter = filter;
-  state.loading = true;
-  updateApp();
+class AppStore extends TypedEventTarget<{
+  refs: Event;
+  filter: Event;
+  selectedCommit: Event;
+  fullscreenDiff: Event;
+}> {
+  refs: RefsData | null = null;
+  filter = "all";
+  search = "";
+  selectedCommit: Commit | null = null;
+  fullscreenDiff = false;
 
-  let ref =
-    filter === "all"
-      ? "all"
-      : filter === "local"
-        ? state.refs?.currentBranch
-        : filter;
-  let result = await fetchCommits(ref, state.search);
-  state.commits = result.commits;
-  state.maxLane = result.maxLane;
-  state.loading = false;
-  updateApp();
-}
+  setRefs(refs: RefsData) {
+    this.refs = refs;
+    this.dispatchEvent(new Event("refs"));
+  }
 
-async function setSearch(search: string) {
-  state.search = search;
-  state.loading = true;
-  updateApp();
+  setFilter(filter: string) {
+    this.filter = filter;
+    this.dispatchEvent(new Event("filter"));
+  }
 
-  let ref =
-    state.filter === "all"
-      ? "all"
-      : state.filter === "local"
-        ? state.refs?.currentBranch
-        : state.filter;
-  let result = await fetchCommits(ref, search);
-  state.commits = result.commits;
-  state.maxLane = result.maxLane;
-  state.loading = false;
-  updateApp();
-}
+  setSearch(search: string) {
+    this.search = search;
+    this.dispatchEvent(new Event("filter")); // same effect as filter change
+  }
 
-async function selectCommit(commit: Commit) {
-  state.selectedCommit = commit;
-  state.diff = null;
-  updateApp();
+  selectCommit(commit: Commit) {
+    this.selectedCommit = commit;
+    this.dispatchEvent(new Event("selectedCommit"));
+  }
 
-  state.diff = await fetchDiff(commit.sha);
-  updateApp();
-}
-
-function toggleFullscreenDiff(open: boolean) {
-  document.startViewTransition(() => {
-    state.fullscreenDiff = open;
-    updateApp();
-  });
+  toggleFullscreenDiff(open: boolean) {
+    document.startViewTransition(() => {
+      this.fullscreenDiff = open;
+      this.dispatchEvent(new Event("fullscreenDiff"));
+    });
+  }
 }
 
 // ============================================================================
@@ -188,20 +160,14 @@ let graphColors = [
 // App Component
 // ============================================================================
 
-function App(handle: Handle) {
-  updateApp = () => handle.update();
+function App(handle: Handle<AppStore>) {
+  let store = new AppStore();
+  handle.context.set(store);
 
-  // Initial load
-  handle.queueTask(async () => {
-    let [refs, commitsResult] = await Promise.all([
-      fetchRefs(),
-      fetchCommits("all"),
-    ]);
-    state.refs = refs;
-    state.commits = commitsResult.commits;
-    state.maxLane = commitsResult.maxLane;
-    state.loading = false;
-    handle.update();
+  // Load refs
+  handle.queueTask(async signal => {
+    let refs = await fetchRefs(signal);
+    store.setRefs(refs);
   });
 
   return () => (
@@ -226,7 +192,13 @@ function App(handle: Handle) {
 // Sidebar
 // ============================================================================
 
-function Sidebar() {
+function Sidebar(handle: Handle) {
+  let store = handle.context.get(App);
+
+  handle.on(store, {
+    refs: () => handle.update(),
+  });
+
   return () => (
     <div
       css={{
@@ -249,10 +221,10 @@ function Sidebar() {
         Git Tree Viewer
       </div>
       <div css={{ flex: 1, overflow: "auto", padding: "8px 0" }}>
-        {state.refs && (
+        {store.refs && (
           <>
-            <RefSection title="LOCAL" nodes={state.refs.local} />
-            {Object.entries(state.refs.remotes).map(([remote, nodes]) => (
+            <RefSection title="LOCAL" nodes={store.refs.local} />
+            {Object.entries(store.refs.remotes).map(([remote, nodes]) => (
               <RefSection
                 key={remote}
                 title={remote.toUpperCase()}
@@ -303,7 +275,12 @@ function RefSection(handle: Handle) {
 }
 
 function RefNodeItem(handle: Handle) {
+  let store = handle.context.get(App);
   let expanded = true;
+
+  handle.on(store, {
+    filter: () => handle.update(),
+  });
 
   return ({ node, depth }: { node: RefNode; depth: number }) => {
     let paddingLeft = 12 + depth * 12;
@@ -338,7 +315,7 @@ function RefNodeItem(handle: Handle) {
       );
     }
 
-    let isSelected = state.filter === node.fullName;
+    let isSelected = store.filter === node.fullName;
     return (
       <div
         css={{
@@ -355,7 +332,7 @@ function RefNodeItem(handle: Handle) {
             background: isSelected ? colors.accentDim : colors.bgLighter,
           },
         }}
-        on={{ click: () => setFilter(node.fullName) }}
+        on={{ click: () => store.setFilter(node.fullName) }}
       >
         {node.current && (
           <span css={{ fontSize: "8px", marginRight: "4px" }}>●</span>
@@ -390,13 +367,35 @@ function MainPanel() {
 // Commit List
 // ============================================================================
 
-function CommitList() {
-  let searchTimeout: ReturnType<typeof setTimeout> | null = null;
+function CommitList(handle: Handle) {
+  let store = handle.context.get(App);
+  let commits: Commit[] = [];
+  let loading = true;
 
-  function handleSearch(value: string) {
-    if (searchTimeout) clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => setSearch(value), 300);
+  async function loadCommits(signal: AbortSignal) {
+    loading = true;
+    handle.update();
+
+    let ref =
+      store.filter === "all"
+        ? "all"
+        : store.filter === "local"
+          ? store.refs?.currentBranch
+          : store.filter;
+    let result = await fetchCommits(ref, store.search, signal);
+    commits = result.commits;
+    loading = false;
+    handle.update();
   }
+
+  handle.on(store, {
+    refs(_, signal) {
+      loadCommits(signal);
+    },
+    filter(_, signal) {
+      loadCommits(signal);
+    },
+  });
 
   return () => (
     <div
@@ -421,10 +420,10 @@ function CommitList() {
       >
         <FilterButton label="All" filter="all" />
         <FilterButton label="Local" filter="local" />
-        {state.refs && (
+        {store.refs && (
           <FilterButton
-            label={state.refs.currentBranch}
-            filter={state.refs.currentBranch}
+            label={store.refs.currentBranch}
+            filter={store.refs.currentBranch}
           />
         )}
         <div css={{ flex: 1 }} />
@@ -443,14 +442,14 @@ function CommitList() {
             "&::placeholder": { color: colors.textMuted },
           }}
           on={{
-            input: e => handleSearch((e.target as HTMLInputElement).value),
+            input: e => store.setSearch(e.currentTarget.value),
           }}
         />
       </div>
 
       {/* Commit table */}
       <div css={{ flex: 1, overflow: "auto" }}>
-        {state.loading ? (
+        {loading && commits.length === 0 ? (
           <div
             css={{
               padding: "20px",
@@ -496,7 +495,7 @@ function CommitList() {
               </tr>
             </thead>
             <tbody>
-              {state.commits.map(commit => (
+              {commits.map(commit => (
                 <CommitRow key={commit.sha} commit={commit} />
               ))}
             </tbody>
@@ -507,9 +506,15 @@ function CommitList() {
   );
 }
 
-function FilterButton() {
+function FilterButton(handle: Handle) {
+  let store = handle.context.get(App);
+
+  handle.on(store, {
+    filter: () => handle.update(),
+  });
+
   return ({ label, filter }: { label: string; filter: string }) => {
-    let isActive = state.filter === filter;
+    let isActive = store.filter === filter;
     return (
       <button
         css={{
@@ -522,7 +527,7 @@ function FilterButton() {
           cursor: "pointer",
           "&:hover": { borderColor: colors.accent },
         }}
-        on={{ click: () => setFilter(filter) }}
+        on={{ click: () => store.setFilter(filter) }}
       >
         {label}
       </button>
@@ -530,9 +535,15 @@ function FilterButton() {
   };
 }
 
-function CommitRow() {
+function CommitRow(handle: Handle) {
+  let store = handle.context.get(App);
+
+  handle.on(store, {
+    selectedCommit: () => handle.update(),
+  });
+
   return ({ commit }: { commit: Commit }) => {
-    let isSelected = state.selectedCommit?.sha === commit.sha;
+    let isSelected = store.selectedCommit?.sha === commit.sha;
     let { graph } = commit;
 
     // Calculate the rightmost lane used in this row's graph
@@ -551,7 +562,7 @@ function CommitRow() {
           cursor: "pointer",
           background: isSelected ? colors.accentDim : "transparent",
         }}
-        on={{ click: () => selectCommit(commit) }}
+        on={{ click: () => store.selectCommit(commit) }}
       >
         <td css={{ display: "flex", alignItems: "center" }}>
           {/* Inline graph */}
@@ -665,8 +676,29 @@ function CommitRow() {
 // Diff Panel
 // ============================================================================
 
-function DiffPanel() {
+function DiffPanel(handle: Handle) {
+  let store = handle.context.get(App);
+  let diff: DiffData | null = null;
   let diffContentRef: HTMLElement;
+
+  handle.on(store, {
+    async selectedCommit(_, signal) {
+      if (!store.selectedCommit) {
+        diff = null;
+        handle.update();
+        return;
+      }
+
+      diff = null;
+      handle.update();
+
+      diff = await fetchDiff(store.selectedCommit.sha, signal);
+      handle.update();
+    },
+    fullscreenDiff() {
+      handle.update();
+    },
+  });
 
   function scrollToFile(path: string | null) {
     if (!diffContentRef || !path) return;
@@ -681,9 +713,9 @@ function DiffPanel() {
   }
 
   return () => {
-    let isFullscreen = state.fullscreenDiff;
+    let isFullscreen = store.fullscreenDiff;
 
-    if (!state.selectedCommit) {
+    if (!store.selectedCommit) {
       return (
         <div
           css={{
@@ -734,27 +766,27 @@ function DiffPanel() {
         >
           <div css={{ flex: 1, minWidth: 0 }}>
             <div css={{ fontWeight: 600, marginBottom: "4px" }}>
-              {state.selectedCommit.subject}
+              {store.selectedCommit.subject}
             </div>
             <div css={{ fontSize: "12px", color: colors.textMuted }}>
-              <span>{state.selectedCommit.author}</span>
+              <span>{store.selectedCommit.author}</span>
               <span css={{ margin: "0 8px" }}>•</span>
-              <span>{state.selectedCommit.date}</span>
+              <span>{store.selectedCommit.date}</span>
               <span css={{ margin: "0 8px" }}>•</span>
               <code css={{ color: colors.accent }}>
-                {state.selectedCommit.shortSha}
+                {store.selectedCommit.shortSha}
               </code>
-              {state.diff && (
+              {diff && (
                 <>
                   <span css={{ margin: "0 8px" }}>•</span>
                   <span>
-                    {state.diff.files.length} file
-                    {state.diff.files.length !== 1 ? "s" : ""}
+                    {diff.files.length} file
+                    {diff.files.length !== 1 ? "s" : ""}
                   </span>
                 </>
               )}
             </div>
-            {state.selectedCommit.body && (
+            {store.selectedCommit.body && (
               <div
                 css={{
                   marginTop: "8px",
@@ -763,11 +795,11 @@ function DiffPanel() {
                   lineHeight: "1.4",
                 }}
               >
-                {state.selectedCommit.body}
+                {store.selectedCommit.body}
               </div>
             )}
           </div>
-          {state.diff && (
+          {diff && (
             <button
               css={{
                 display: "flex",
@@ -786,7 +818,7 @@ function DiffPanel() {
                   borderColor: colors.accent,
                 },
               }}
-              on={{ click: () => toggleFullscreenDiff(!isFullscreen) }}
+              on={{ click: () => store.toggleFullscreenDiff(!isFullscreen) }}
             >
               {isFullscreen ? (
                 <>
@@ -824,7 +856,7 @@ function DiffPanel() {
         {/* Content area with sidebar and diff */}
         <div css={{ flex: 1, display: "flex", overflow: "hidden" }}>
           {/* File sidebar */}
-          {state.diff && state.diff.files.length > 0 && (
+          {diff && diff.files.length > 0 && (
             <div
               css={{
                 borderRight: `1px solid ${colors.border}`,
@@ -848,7 +880,7 @@ function DiffPanel() {
                 Changed Files
               </div>
               <div css={{ flex: 1, overflow: "auto", padding: "4px 0" }}>
-                {state.diff.files.map(file => (
+                {diff.files.map(file => (
                   <FileListItem
                     key={file.path}
                     file={file}
@@ -861,7 +893,7 @@ function DiffPanel() {
 
           {/* Diff content */}
           <div css={{ flex: 1, overflow: "auto" }}>
-            {state.diff ? (
+            {diff ? (
               <section
                 connect={node => (diffContentRef = node)}
                 css={{
@@ -890,7 +922,7 @@ function DiffPanel() {
                   },
                   "& .d2h-diff-tbody": { position: "relative" },
                 }}
-                innerHTML={state.diff.diffHtml}
+                innerHTML={diff.diffHtml}
               />
             ) : (
               <div
