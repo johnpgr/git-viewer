@@ -760,6 +760,18 @@ function DiffPanel() {
                 </>
               )}
             </div>
+            {state.selectedCommit.body && (
+              <div
+                css={{
+                  marginTop: "8px",
+                  whiteSpace: "pre-wrap",
+                  fontSize: "12px",
+                  lineHeight: "1.4",
+                }}
+              >
+                {state.selectedCommit.body}
+              </div>
+            )}
           </div>
           {state.diff && (
             <button
