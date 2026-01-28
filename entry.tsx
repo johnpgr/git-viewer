@@ -250,8 +250,7 @@ function App(handle: Handle<AppStore>) {
   });
 
   return () => {
-    colors = store.theme === "dark" ? darkPalette : lightPalette;
-    graphColors = store.theme === "dark" ? graphColorsDark : graphColorsLight;
+    syncThemeColors(store.theme);
 
     return (
       <div
@@ -887,6 +886,13 @@ function DiffPanel(handle: Handle) {
 
   return () => {
     let isFullscreen = store.fullscreenDiff;
+    let diffHtml =
+      diff && store.theme === "dark"
+        ? diff.diffHtml.replace(
+            /d2h-light-color-scheme/g,
+            "d2h-dark-color-scheme",
+          )
+        : diff?.diffHtml;
     let diffStyles = {
       "& .d2h-wrapper": { background: "transparent" },
       "& .d2h-file-header": {
@@ -1099,9 +1105,8 @@ function DiffPanel(handle: Handle) {
             {diff ? (
               <section
                 connect={node => (diffContentRef = node)}
-                class={store.theme === "dark" ? "d2h-dark-color-scheme" : ""}
                 css={diffStyles}
-                innerHTML={diff.diffHtml}
+                innerHTML={diffHtml}
               />
             ) : (
               <div
